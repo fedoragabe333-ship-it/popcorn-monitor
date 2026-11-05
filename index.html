@@ -1,0 +1,573 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Popcorn Timer</title>
+
+<style>
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: #171717;
+  color: white;
+  font-family: Arial, sans-serif;
+}
+
+.app {
+  width: 90%;
+  max-width: 420px;
+  text-align: center;
+  padding: 20px;
+}
+
+h1 { font-size: 32px; }
+
+input[type=number] {
+  width: 100%;
+  padding: 14px;
+  font-size: 22px;
+  text-align: center;
+  border-radius: 10px;
+  border: none;
+}
+
+input[type=range] { width: 100%; }
+
+button {
+  width: 100%;
+  padding: 17px;
+  border: none;
+  border-radius: 12px;
+  font-size: 19px;
+  font-weight: bold;
+  margin-top: 12px;
+  cursor: pointer;
+}
+
+.start { background: #36b56b; color: white; }
+.mic { background: #247bd1; color: white; }
+.pop { background: #ff9d24; color: black; font-size: 28px; padding: 25px; }
+.stop { background: #555; color: white; }
+
+#countdown {
+  font-size: 65px;
+  font-weight: bold;
+  margin: 20px 0;
+}
+
+.stats {
+  background: #292929;
+  padding: 15px;
+  border-radius: 12px;
+  margin: 15px 0;
+}
+
+.stat {
+  margin: 12px;
+  font-size: 18px;
+}
+
+.stat span {
+  color: #ffb347;
+  font-weight: bold;
+}
+
+#status {
+  color: #ffb347;
+  min-height: 24px;
+  font-size: 17px;
+}
+
+.settings {
+  background: #292929;
+  padding: 15px;
+  border-radius: 12px;
+  margin-top: 15px;
+}
+
+.small {
+  color: #aaa;
+  font-size: 13px;
+}
+</style>
+</head>
+
+<body>
+
+<div class="app">
+
+<h1>🍿 Popcorn Timer</h1>
+
+<div class="settings">
+
+  <p>Alert after no pops for:</p>
+
+  <input id="seconds" type="number"
+  min="1" max="60" value="3">
+
+  <p>SECONDS</p>
+
+  <p>Microphone Sensitivity</p>
+
+  <input id="sensitivity" type="range"
+  min="1" max="100" value="65">
+
+  <p id="sensitivityValue">65%</p>
+
+  <p class="small">
+  Higher sensitivity detects quieter pops.
+  </p>
+
+</div>
+
+<div id="countdown">3.0</div>
+
+<p id="status">Ready to start</p>
+
+<div class="stats">
+
+  <div class="stat">
+  Total Pops: <span id="popCount">0</span>
+  </div>
+
+  <div class="stat">
+  Last Pop Interval:
+  <span id="lastInterval">--</span>
+  </div>
+
+  <div class="stat">
+  Microphone:
+  <span id="micStatus">Off</span>
+  </div>
+
+</div>
+
+<button class="start" onclick="startTimer()">
+START TIMER
+</button>
+
+<button class="mic" onclick="startMicrophone()">
+🎤 START MICROPHONE
+</button>
+
+<button class="pop" onclick="recordPop()">
+🍿 MANUAL POP
+</button>
+
+<button class="stop" onclick="stopAll()">
+STOP EVERYTHING
+</button>
+
+</div>
+
+<script>
+
+let lastPop = null;
+let previousPop = null;
+
+let timerInterval = null;
+let alarmInterval = null;
+
+let popCount = 0;
+let threshold = 3;
+let alerted = false;
+
+let audioContext = null;
+let micStream = null;
+let analyser = null;
+let microphoneSource = null;
+let silentGain = null;
+let noiseFloor = 0.004;
+
+let highPass = null;
+let lowPass = null;
+
+let animationFrame = null;
+let lastDetection = 0;
+
+// Update sensitivity display
+
+document.getElementById("sensitivity")
+.addEventListener("input", function() {
+
+  document.getElementById("sensitivityValue")
+  .textContent = this.value + "%";
+
+});
+
+// Create audio system
+
+async function getAudioContext() {
+
+  if (!audioContext) {
+
+    audioContext = new (
+      window.AudioContext ||
+      window.webkitAudioContext
+    )();
+
+  }
+
+  if (audioContext.state === "suspended") {
+    await audioContext.resume();
+  }
+
+}
+
+// Start timer
+
+function startTimer() {
+
+  threshold = Number(
+    document.getElementById("seconds").value
+  );
+
+  if (!Number.isFinite(threshold) ||
+      threshold < 1 || threshold > 60) {
+
+    alert("Choose between 1 and 60 seconds.");
+    return;
+
+  }
+
+  if (timerInterval !== null) {
+    clearInterval(timerInterval);
+  }
+
+  stopAlarm();
+
+  lastPop = Date.now();
+  previousPop = null;
+  popCount = 0;
+  alerted = false;
+
+  document.getElementById("popCount").textContent = 0;
+  document.getElementById("lastInterval").textContent = "--";
+
+  document.getElementById("status").textContent =
+    "Waiting for popcorn pops...";
+
+  timerInterval = setInterval(updateTimer, 50);
+
+  updateTimer();
+
+}
+
+// Record a detected pop
+
+function recordPop() {
+
+  if (lastPop === null) return;
+
+  let now = Date.now();
+
+  if (previousPop !== null) {
+
+    let difference = (now - previousPop) / 1000;
+
+    document.getElementById("lastInterval").textContent =
+      difference.toFixed(2) + " sec";
+
+  }
+
+  stopAlarm();
+
+  previousPop = lastPop;
+  lastPop = now;
+
+  popCount++;
+
+  document.getElementById("popCount").textContent =
+    popCount;
+
+  document.getElementById("status").textContent =
+    "🍿 Pop detected!";
+
+  alerted = false;
+
+  updateTimer();
+
+}
+
+// Countdown
+
+function updateTimer() {
+
+  if (lastPop === null) return;
+
+  let elapsed = (Date.now() - lastPop) / 1000;
+
+  let remaining = Math.max(0, threshold - elapsed);
+
+  document.getElementById("countdown").textContent =
+    remaining.toFixed(1);
+
+  if (remaining <= 0 && !alerted) {
+
+    alerted = true;
+
+    document.getElementById("status").textContent =
+      "🍿 POPPING HAS SLOWED DOWN!";
+
+    startAlarm();
+
+  }
+
+}
+
+// Beep sound
+
+function playBeep() {
+
+  if (!audioContext ||
+      audioContext.state !== "running") return;
+
+  let oscillator = audioContext.createOscillator();
+  let gain = audioContext.createGain();
+
+  oscillator.connect(gain);
+  gain.connect(audioContext.destination);
+
+  oscillator.frequency.value = 880;
+  gain.gain.value = 0.3;
+
+  oscillator.start();
+
+  oscillator.stop(audioContext.currentTime + 0.35);
+
+}
+
+// Alarm
+
+function startAlarm() {
+
+  playBeep();
+
+  alarmInterval = setInterval(() => {
+    playBeep();
+  }, 900);
+
+}
+
+function stopAlarm() {
+
+  if (alarmInterval !== null) {
+    clearInterval(alarmInterval);
+  }
+
+  alarmInterval = null;
+
+}
+
+// Start microphone
+
+async function startMicrophone() {
+
+  if (micStream) return;
+
+  try {
+
+    await getAudioContext();
+
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false
+      }
+    });
+
+    microphoneSource =
+      audioContext.createMediaStreamSource(micStream);
+
+    highPass = audioContext.createBiquadFilter();
+    highPass.type = "highpass";
+    highPass.frequency.value = 300;
+
+    lowPass = audioContext.createBiquadFilter();
+    lowPass.type = "lowpass";
+    lowPass.frequency.value = 10000;
+
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 1024;
+    analyser.smoothingTimeConstant = 0;
+
+    microphoneSource.connect(highPass);
+    highPass.connect(lowPass);
+    lowPass.connect(analyser);
+
+    // Keep the microphone audio graph active on mobile Safari
+    // without playing the microphone through the phone speaker.
+    silentGain = audioContext.createGain();
+    silentGain.gain.value = 0;
+    analyser.connect(silentGain);
+    silentGain.connect(audioContext.destination);
+
+    await audioContext.resume();
+
+    document.getElementById("micStatus").textContent =
+      "Listening";
+
+    if (lastPop === null) {
+      startTimer();
+    }
+
+    document.getElementById("status").textContent =
+      "🎤 Microphone listening...";
+
+    lastDetection = 0;
+
+    detectPops();
+
+  } catch (error) {
+
+    document.getElementById("micStatus").textContent =
+      "Unavailable";
+
+    alert(
+      "Could not access microphone. Check browser permissions. " +
+      error.message
+    );
+
+  }
+
+}
+
+// Analyze microphone sound and detect sudden popcorn-like pops
+
+function detectPops() {
+
+  if (!analyser) return;
+
+  let samples = new Float32Array(analyser.fftSize);
+  analyser.getFloatTimeDomainData(samples);
+
+  let peak = 0;
+  let sumSquares = 0;
+
+  for (let i = 0; i < samples.length; i++) {
+    let value = Math.abs(samples[i]);
+
+    if (value > peak) peak = value;
+    sumSquares += samples[i] * samples[i];
+  }
+
+  let rms = Math.sqrt(sumSquares / samples.length);
+
+  let sensitivity = Number(
+    document.getElementById("sensitivity").value
+  );
+
+  // Sensitivity 1 = less sensitive; 100 = more sensitive.
+  // At maximum, allow much quieter transients than the previous version.
+  let sensitivityAmount = (sensitivity - 1) / 99;
+  let absolutePeakThreshold = 0.055 - sensitivityAmount * 0.050;
+
+  // A pop should be a brief peak above the room's ongoing sound level.
+  // Keep a small absolute floor so silence and microphone self-noise do
+  // not constantly trigger the counter.
+  let adaptivePeakThreshold = Math.max(
+    absolutePeakThreshold,
+    noiseFloor * (4.5 - sensitivityAmount * 2.0)
+  );
+  let rmsThreshold = Math.max(0.0007, noiseFloor * 0.85);
+
+  let now = performance.now();
+  let isPop = (
+    peak > adaptivePeakThreshold &&
+    rms > rmsThreshold &&
+    now - lastDetection > 180
+  );
+
+  if (isPop) {
+    lastDetection = now;
+    recordPop();
+  }
+
+  // Continuously track the background, including after a pop, but slowly
+  // enough that a short pop does not become the new noise baseline.
+  noiseFloor = noiseFloor * 0.985 + rms * 0.015;
+
+  animationFrame = requestAnimationFrame(detectPops);
+}
+
+
+// Stop microphone
+
+function stopMicrophone() {
+
+  if (animationFrame !== null) {
+    cancelAnimationFrame(animationFrame);
+  }
+
+  animationFrame = null;
+
+  if (micStream) {
+
+    micStream.getTracks().forEach(track => {
+      track.stop();
+    });
+
+  }
+
+  if (microphoneSource) {
+    microphoneSource.disconnect();
+  }
+
+  if (analyser) {
+    analyser.disconnect();
+  }
+
+  if (silentGain) {
+    silentGain.disconnect();
+  }
+
+  silentGain = null;
+  noiseFloor = 0.004;
+
+  micStream = null;
+  microphoneSource = null;
+  analyser = null;
+  highPass = null;
+  lowPass = null;
+
+  document.getElementById("micStatus").textContent =
+    "Off";
+
+}
+
+// Stop everything
+
+function stopAll() {
+
+  if (timerInterval !== null) {
+    clearInterval(timerInterval);
+  }
+
+  timerInterval = null;
+
+  stopAlarm();
+  stopMicrophone();
+
+  lastPop = null;
+  previousPop = null;
+  alerted = false;
+
+  document.getElementById("countdown").textContent = "0.0";
+
+  document.getElementById("status").textContent =
+    "Timer stopped";
+
+}
+
+</script>
+
+</body>
+</html>
